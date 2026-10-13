@@ -2,13 +2,9 @@ name: Daily B2B Trivia & Facts Automation
 
 on:
   workflow_dispatch: # Triggered by cron-job.org at exact 6:35 PM IST (Tue/Sat)
-  push:
-    paths:
-      - 'README.md'
 
 jobs:
   publish-trivia:
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: write
