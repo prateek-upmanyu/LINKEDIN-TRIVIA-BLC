@@ -1,0 +1,209 @@
+import os
+import sys
+import time
+import requests
+from datetime import datetime
+from renderer import render_trivia_card
+from trivia_database import get_trivia_by_day
+
+BUFFER_TOKEN = os.environ.get("BUFFER_TOKEN", "")
+FREEIMAGE_API_KEY = "6d207e02198a847aa98d0a2a901485a5"
+HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trivia_history.txt")
+
+def upload_image_to_cdn(image_path):
+    ua_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    image_url = None
+
+    # Provider 1: Unique Timestamped Direct GitHub Repo Upload (100% fresh, uncacheable, reliable)
+    if not image_url:
+        try:
+            import base64
+            gh_token = (os.environ.get("GITHUB_TOKEN") or "").strip()
+            if not gh_token:
+                raise ValueError("GITHUB_TOKEN env var not set")
+            with open(image_path, "rb") as f:
+                b64_content = base64.b64encode(f.read()).decode("utf-8")
+            ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            ext = os.path.splitext(image_path)[1]
+            dest_filename = f"posts/trivia_{ts_str}{ext}"
+            repo_owner = os.environ.get("GITHUB_REPOSITORY", "prateek-upmanyu/LINKEDIN-TRIVIA-BLC")
+            api_url = f"https://api.github.com/repos/{repo_owner}/contents/{dest_filename}"
+            gh_headers = {
+                "Authorization": f"Bearer {gh_token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "User-Agent": "Mozilla/5.0"
+            }
+            payload = {
+                "message": f"chore: upload {dest_filename} [skip ci]",
+                "content": b64_content,
+                "branch": "master"
+            }
+            r_gh = requests.put(api_url, headers=gh_headers, json=payload, timeout=(10.0, 30.0))
+            if r_gh.status_code in [200, 201]:
+                image_url = r_gh.json().get("content", {}).get("download_url")
+                print(f"CDN Provider 1 (Unique GitHub Raw) success: {image_url}")
+        except Exception as e:
+            print(f"Provider 1 (GitHub Upload) note: {e}")
+
+    # Provider 2: Catbox.moe (Direct static image CDN with explicit filename)
+    if not image_url:
+        try:
+            with open(image_path, "rb") as f:
+                r_cat = requests.post(
+                    "https://catbox.moe/user/api.php",
+                    data={"reqtype": "fileupload"},
+                    files={"fileToUpload": (os.path.basename(image_path), f, "image/jpeg")},
+                    headers=ua_headers,
+                    timeout=(10.0, 30.0)
+                )
+                if r_cat.status_code == 200 and r_cat.text.startswith("http"):
+                    image_url = r_cat.text.strip()
+                    print(f"CDN Provider 2 (Catbox) success: {image_url}")
+        except Exception as e:
+            print(f"Provider 2 (Catbox) note: {e}")
+
+    # Provider 3: FreeImage.host
+    if not image_url:
+        try:
+            with open(image_path, "rb") as f:
+                r_free = requests.post(
+                    "https://freeimage.host/api/1/upload",
+                    data={"key": FREEIMAGE_API_KEY, "action": "upload"},
+                    files={"source": (os.path.basename(image_path), f, "image/jpeg")},
+                    headers=ua_headers,
+                    timeout=(5.0, 15.0)
+                )
+                if r_free.status_code == 200:
+                    image_url = r_free.json().get("image", {}).get("url")
+                    if image_url:
+                        print(f"CDN Provider 3 (FreeImage) success: {image_url}")
+        except Exception as e:
+            print(f"Provider 3 (FreeImage) note: {e}")
+
+    if not image_url:
+        raise RuntimeError("Failed to upload image to any public CDN for Buffer.")
+
+    time.sleep(1.5)
+    return image_url
+
+def post_to_buffer(token, caption, image_url):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    url = "https://api.buffer.com"
+
+    # 1. Fetch organization ID
+    q_org = {"query": "query { account { organizations { id name } } }"}
+    r_org = requests.post(url, headers=headers, json=q_org, timeout=(4.0, 10.0))
+    if r_org.status_code != 200 or "data" not in r_org.json():
+        raise RuntimeError(f"Buffer organization query failed: {r_org.text}")
+    orgs = r_org.json()["data"]["account"]["organizations"]
+    if not orgs:
+        raise RuntimeError("No organizations found in Buffer account.")
+    org_id = orgs[0]["id"]
+
+    # 2. Fetch channels and locate bulk-leads-leads (LinkedIn)
+    q_chan = {"query": f'query {{ channels(organizationId: "{org_id}") {{ id name service }} }}'}
+    r_chan = requests.post(url, headers=headers, json=q_chan, timeout=(4.0, 10.0))
+    if r_chan.status_code != 200 or "data" not in r_chan.json():
+        raise RuntimeError(f"Buffer channels query failed: {r_chan.text}")
+    channels = r_chan.json()["data"]["channels"]
+
+    linkedin_chan = None
+    for c in channels:
+        if c.get("service") == "linkedin" and ("bulk-leads" in c.get("name", "").lower() or c.get("id") == "6ab2ba02ea19ca0bdeb83136"):
+            linkedin_chan = c
+            break
+    if not linkedin_chan:
+        for c in channels:
+            if c.get("service") == "linkedin":
+                linkedin_chan = c
+                break
+
+    if not linkedin_chan:
+        raise RuntimeError("No LinkedIn channel found in Buffer account.")
+
+    channel_id = linkedin_chan["id"]
+    print(f"Targeting Buffer LinkedIn channel: '{linkedin_chan.get('name')}' (ID: {channel_id})")
+
+    # 3. Create Post
+    mutation = """
+    mutation CreatePost($input: CreatePostInput!) {
+        createPost(input: $input) {
+            ... on PostActionSuccess {
+                post { id status }
+            }
+            ... on UserError {
+                message
+            }
+        }
+    }
+    """
+    variables = {
+        "input": {
+            "channelId": channel_id,
+            "text": caption,
+            "mode": "shareNow",
+            "assets": {
+                "image": {
+                    "url": image_url
+                }
+            }
+        }
+    }
+
+    r_post = requests.post(url, headers=headers, json={"query": mutation, "variables": variables}, timeout=(5.0, 15.0))
+    if r_post.status_code != 200:
+        raise RuntimeError(f"Buffer createPost HTTP error: {r_post.text}")
+
+    res_json = r_post.json()
+    create_res = res_json.get("data", {}).get("createPost", {})
+    if "message" in create_res:
+        raise RuntimeError(f"Buffer post creation failed: {create_res['message']}")
+
+    post_info = create_res.get("post", {})
+    post_id = post_info.get("id", "unknown")
+    status = post_info.get("status", "unknown")
+    print(f"Buffer post created successfully! Post ID: {post_id} (Status: {status})")
+    return post_id
+
+def append_to_history(trivia_id, source, post_id):
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_line = f"{now_str} | Trivia #{trivia_id} | {source} | Buffer ID: {post_id}\n"
+    with open(HISTORY_FILE, "a", encoding="utf-8") as f:
+        f.write(log_line)
+    print(f"Logged Trivia #{trivia_id} to history.")
+
+def main():
+    print("=" * 50)
+    print(" Bulk Leads Caller - Daily Trivia & Fact Publisher")
+    print("=" * 50)
+
+    if not BUFFER_TOKEN or BUFFER_TOKEN.strip() == "":
+        raise RuntimeError("BUFFER_TOKEN secret is missing or empty. Please set BUFFER_TOKEN.")
+
+    print("\n[STEP 1/4] Selecting unposted verified B2B trivia...")
+    trivia = get_trivia_by_day()
+    print(f"Selected Trivia #{trivia['id']}: {trivia['source']}")
+
+    print("\n[STEP 2/4] Rendering visual card...")
+    rendered_image = render_trivia_card(trivia["body"], trivia["source"], output_path="rendered_trivia.jpg")
+    print(f"Rendered image path: {rendered_image}")
+
+    print("\n[STEP 3/4] Uploading image to CDN...")
+    image_url = upload_image_to_cdn(rendered_image)
+    print(f"CDN Image URL: {image_url}")
+
+    print("\n[STEP 4/4] Publishing to LinkedIn via Buffer...")
+    post_id = post_to_buffer(BUFFER_TOKEN, trivia["caption"], image_url)
+
+    append_to_history(trivia["id"], trivia["source"], post_id)
+    print("\nSUCCESS! Daily Trivia posted successfully.")
+
+if __name__ == "__main__":
+    main()
