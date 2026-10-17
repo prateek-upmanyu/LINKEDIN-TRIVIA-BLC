@@ -91,7 +91,7 @@ def upload_image_to_cdn(image_path):
 
 def post_to_buffer(token, caption, image_url):
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     }
@@ -102,75 +102,89 @@ def post_to_buffer(token, caption, image_url):
     r_org = requests.post(url, headers=headers, json=q_org, timeout=(4.0, 10.0))
     if r_org.status_code != 200 or "data" not in r_org.json():
         raise RuntimeError(f"Buffer organization query failed: {r_org.text}")
+    
     orgs = r_org.json()["data"]["account"]["organizations"]
     if not orgs:
         raise RuntimeError("No organizations found in Buffer account.")
     org_id = orgs[0]["id"]
 
-    # 2. Fetch channels and locate bulk-leads-leads (LinkedIn)
-    q_chan = {"query": f'query {{ channels(organizationId: "{org_id}") {{ id name service }} }}'}
+    # 2. Fetch channels (LinkedIn Business Page)
+    q_chan = {
+        "query": "query GetChannels($input: ChannelsInput!) { channels(input: $input) { id name service type } }",
+        "variables": {"input": {"organizationId": org_id}}
+    }
     r_chan = requests.post(url, headers=headers, json=q_chan, timeout=(4.0, 10.0))
     if r_chan.status_code != 200 or "data" not in r_chan.json():
         raise RuntimeError(f"Buffer channels query failed: {r_chan.text}")
+    
     channels = r_chan.json()["data"]["channels"]
-
-    linkedin_chan = None
+    target_channel = None
     for c in channels:
-        if c.get("service") == "linkedin" and ("bulk-leads" in c.get("name", "").lower() or c.get("id") == "6ab2ba02ea19ca0bdeb83136"):
-            linkedin_chan = c
+        if c.get("service") == "linkedin":
+            target_channel = c
             break
-    if not linkedin_chan:
-        for c in channels:
-            if c.get("service") == "linkedin":
-                linkedin_chan = c
-                break
+    
+    if not target_channel:
+        raise RuntimeError("No connected LinkedIn channel found in Buffer.")
+    
+    channel_id = target_channel["id"]
+    channel_name = target_channel["name"]
+    print(f"Targeting Buffer LinkedIn channel: '{channel_name}' (ID: {channel_id})")
 
-    if not linkedin_chan:
-        raise RuntimeError("No LinkedIn channel found in Buffer account.")
-
-    channel_id = linkedin_chan["id"]
-    print(f"Targeting Buffer LinkedIn channel: '{linkedin_chan.get('name')}' (ID: {channel_id})")
-
-    # 3. Create Post
+    # 3. Create post via Buffer GraphQL API
     mutation = """
     mutation CreatePost($input: CreatePostInput!) {
-        createPost(input: $input) {
-            ... on PostActionSuccess {
-                post { id status }
-            }
-            ... on UserError {
-                message
-            }
+      createPost(input: $input) {
+        ... on PostActionSuccess {
+          post {
+            id
+            status
+          }
         }
+        ... on InvalidInputError {
+          message
+        }
+        ... on UnexpectedError {
+          message
+        }
+        ... on RestProxyError {
+          message
+        }
+      }
     }
     """
+
     variables = {
-        "input": {
-            "channelId": channel_id,
-            "text": caption,
-            "mode": "shareNow",
-            "assets": {
-                "image": {
-                    "url": image_url
-                }
+      "input": {
+        "channelId": channel_id,
+        "text": caption,
+        "mode": "shareNow",
+        "schedulingType": "automatic",
+        "assets": [
+          {
+            "image": {
+              "url": image_url
             }
-        }
+          }
+        ]
+      }
     }
 
-    r_post = requests.post(url, headers=headers, json={"query": mutation, "variables": variables}, timeout=(5.0, 15.0))
-    if r_post.status_code != 200:
-        raise RuntimeError(f"Buffer createPost HTTP error: {r_post.text}")
-
-    res_json = r_post.json()
-    create_res = res_json.get("data", {}).get("createPost", {})
-    if "message" in create_res:
-        raise RuntimeError(f"Buffer post creation failed: {create_res['message']}")
-
-    post_info = create_res.get("post", {})
-    post_id = post_info.get("id", "unknown")
-    status = post_info.get("status", "unknown")
-    print(f"Buffer post created successfully! Post ID: {post_id} (Status: {status})")
-    return post_id
+    res = requests.post(url, headers=headers, json={"query": mutation, "variables": variables}, timeout=(5.0, 15.0))
+    if res.status_code != 200:
+        raise RuntimeError(f"Buffer API request failed: {res.status_code} - {res.text}")
+    
+    res_data = res.json()
+    create_res = res_data.get("data", {}).get("createPost", {})
+    if "post" in create_res:
+        post_id = create_res["post"]["id"]
+        status = create_res["post"]["status"]
+        print(f"Buffer post created successfully! Post ID: {post_id} (Status: {status})")
+        return post_id
+    elif "message" in create_res:
+        raise RuntimeError(f"Buffer post creation error: {create_res['message']}")
+    else:
+        raise RuntimeError(f"Unexpected Buffer response: {res_data}")
 
 def append_to_history(trivia_id, source, post_id):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
