@@ -1,2 +1,3 @@
 # BLC Trivia Post History
 2026-10-18 02:36:31 | Trivia #80 | SOURCE: InsideSales.com Outbound Cadence Study | Buffer ID: 6ad3e34de272c4918f9ff9e7
+2026-10-20 13:05:33 | Trivia #86 | SOURCE: Salesforce State of the Connected Customer | Buffer ID: 6ad76712fcb5599ad93a6ef5
