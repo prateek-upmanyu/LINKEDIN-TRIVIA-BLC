@@ -6,3 +6,4 @@
 2026-10-31 13:05:35 | Trivia #1 | SOURCE: Harvard Business Review Lead Response Study | Buffer ID: 6ae5e794eaa24d6f9a772a2a
 2026-11-03 13:05:38 | Trivia #8 | SOURCE: UCLA Vocal Intelligence Research | Buffer ID: 6ae9dc17647691113d4ecbf8
 2026-11-07 13:05:36 | Trivia #16 | SOURCE: LinkedIn State of Sales Annual Report | Buffer ID: 6aef2216af7e526d432271f5
+2026-11-10 13:05:45 | Trivia #23 | SOURCE: Retention Science (540 Million Emails) | Buffer ID: 6af3169f2d960d0974b1a002
