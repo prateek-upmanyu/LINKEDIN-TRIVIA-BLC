@@ -214,7 +214,8 @@ def main():
     print(f"CDN Image URL: {image_url}")
 
     print("\n[STEP 4/4] Publishing to LinkedIn via Buffer...")
-    post_id = post_to_buffer(BUFFER_TOKEN, trivia["caption"], image_url)
+    caption = trivia["caption"].strip() + "\n\n📲 Get Bulk Leads Caller: https://linkface.in/bulkleadscaller"
+    post_id = post_to_buffer(BUFFER_TOKEN, caption, image_url)
 
     append_to_history(trivia["id"], trivia["source"], post_id)
     print("\nSUCCESS! Daily Trivia posted successfully.")
